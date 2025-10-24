@@ -1,0 +1,26 @@
+# RAG 評估系統 v2.0 相依套件
+# =====================================
+
+# 核心套件
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0
+
+# 中文處理
+jieba>=0.42.1
+
+# Streamlit 儀表板
+streamlit>=1.28.0
+plotly>=5.17.0
+
+# 第二層：語義相似度評估（可選）
+sentence-transformers>=2.2.2
+torch>=2.0.0
+
+# 第三層：GPT 評審（可選）
+openai>=1.3.0
+
+# 開發工具（可選）
+pytest>=7.4.0
+black>=23.10.0
