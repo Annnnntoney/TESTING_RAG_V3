@@ -1651,62 +1651,69 @@ if uploaded_file is not None:
             if enable_manual_gpt:
                 st.markdown("**🤖 GPT 評分**")
 
+                score_container = st.container()
+                controls_container = st.container()
+
                 if 'gpt_overview_selected_dims' not in st.session_state:
                     st.session_state.gpt_overview_selected_dims = DEFAULT_GPT_DIMENSIONS.copy()
                 if 'gpt_overview_weight_inputs' not in st.session_state:
                     st.session_state.gpt_overview_weight_inputs = {
                         dim: 0.25 for dim in DEFAULT_GPT_DIMENSIONS
                     }
+                if 'overview_gpt_dims' not in st.session_state:
+                    st.session_state.overview_gpt_dims = st.session_state.gpt_overview_selected_dims.copy()
 
                 available_dims = list(GPT_DIMENSION_LABELS.keys())
-                selected_dims_widget = st.multiselect(
-                    "選擇納入 GPT 總分的維度",
-                    options=available_dims,
-                    default=st.session_state.gpt_overview_selected_dims,
-                    format_func=lambda d: GPT_DIMENSION_LABELS.get(d, d),
-                    key="overview_gpt_dims"
-                )
 
-                if selected_dims_widget:
-                    st.session_state.gpt_overview_selected_dims = selected_dims_widget
+                selected_dims = list(st.session_state.overview_gpt_dims)
+                display_warning = False
+                if not selected_dims:
+                    display_warning = True
+                    selected_dims = DEFAULT_GPT_DIMENSIONS.copy()
+                    st.session_state.overview_gpt_dims = selected_dims.copy()
                 else:
-                    st.warning("至少選擇一個 GPT 維度才可計算總分，已暫時使用預設四維。")
-                    st.session_state.gpt_overview_selected_dims = DEFAULT_GPT_DIMENSIONS.copy()
+                    st.session_state.gpt_overview_selected_dims = selected_dims.copy()
 
-                selected_dims = st.session_state.gpt_overview_selected_dims
+                # Remove weights for dims no longer selected to avoid stale data
+                removed_dims = [
+                    dim for dim in list(st.session_state.gpt_overview_weight_inputs.keys())
+                    if dim not in selected_dims
+                ]
+                for dim in removed_dims:
+                    st.session_state.gpt_overview_weight_inputs.pop(dim, None)
+                    weight_key = f"overview_weight_{dim}"
+                    if weight_key in st.session_state:
+                        del st.session_state[weight_key]
 
-                weight_cols = st.columns(len(selected_dims)) if selected_dims else []
-                for col, dim in zip(weight_cols, selected_dims):
-                    with col:
-                        current_value = st.session_state.gpt_overview_weight_inputs.get(dim, 0.25)
-                        new_value = st.number_input(
-                            GPT_DIMENSION_LABELS.get(dim, dim),
-                            min_value=0.0,
-                            value=float(current_value),
-                            step=0.05,
-                            key=f"overview_weight_{dim}"
-                        )
-                        st.session_state.gpt_overview_weight_inputs[dim] = new_value
+                # Sync number input state before rendering score so updated權重立即生效
+                for dim in selected_dims:
+                    weight_key = f"overview_weight_{dim}"
+                    if weight_key in st.session_state:
+                        st.session_state.gpt_overview_weight_inputs[dim] = float(st.session_state[weight_key])
+                    else:
+                        st.session_state.gpt_overview_weight_inputs.setdefault(dim, 0.25)
 
                 raw_weights = {
                     dim: st.session_state.gpt_overview_weight_inputs.get(dim, 0.0)
                     for dim in selected_dims
                 }
                 weight_sum = sum(raw_weights.values())
-                if weight_sum <= 0:
-                    dim_weights = {dim: 1.0 / len(selected_dims) for dim in selected_dims}
+                if selected_dims:
+                    if weight_sum <= 0:
+                        dim_weights = {dim: 1.0 / len(selected_dims) for dim in selected_dims}
+                    else:
+                        dim_weights = {dim: weight / weight_sum for dim, weight in raw_weights.items()}
+                    summary_text = format_gpt_weight_summary(selected_dims, dim_weights)
                 else:
-                    dim_weights = {dim: weight / weight_sum for dim, weight in raw_weights.items()}
-
-                summary_text = format_gpt_weight_summary(selected_dims, dim_weights)
+                    dim_weights = {}
+                    summary_text = "預設四維平均"
 
                 judge_df = st.session_state.history_manager.load_llm_judge_table()
-                if judge_df.empty:
-                    st.info("尚未有 GPT 評分紀錄")
-                    st.caption(f"當前設定：{summary_text}")
-                    return
+                if judge_df is None:
+                    judge_df = pd.DataFrame()
+                else:
+                    judge_df = judge_df.copy()
 
-                judge_df = judge_df.copy()
                 judge_df['question_id'] = pd.to_numeric(judge_df.get('question_id'), errors='coerce')
 
                 def compute_weighted_average(version_label: str) -> float | None:
@@ -1739,38 +1746,70 @@ if uploaded_file is not None:
                 avg_optimized = compute_weighted_average('optimized')
 
                 display_score = avg_optimized if avg_optimized is not None else avg_original
-                if display_score is None:
-                    st.info("尚未計算 GPT 評分")
-                else:
-                    color = '#2196F3'
-                    delta_html = ""
-                    if avg_original is not None and avg_optimized is not None:
-                        improvement = avg_optimized - avg_original
-                        if improvement > 0:
-                            color = '#28a745'
-                            delta_html = f"<p style='color: {color}; font-size: 18px;'>↑ {improvement:.1f}分</p>"
-                        elif improvement < 0:
-                            color = '#dc3545'
-                            delta_html = f"<p style='color: {color}; font-size: 18px;'>↓ {abs(improvement):.1f}分</p>"
-                        else:
-                            color = '#5f6368'
-                            delta_html = f"<p style='color: {color}; font-size: 18px;'>→ 0.0分</p>"
 
-                    st.markdown(
-                        f"<h1 style='color: {color}; margin: 0;'>{display_score:.1f}分</h1>",
-                        unsafe_allow_html=True
+                with score_container:
+                    if judge_df.empty:
+                        st.info("尚未有 GPT 評分紀錄")
+                        st.caption(f"當前設定：{summary_text}")
+                    elif display_score is None:
+                        st.info("尚未計算 GPT 評分")
+                        st.caption(f"人工 GPT 評審依照{summary_text}的加權平均；若兩版本皆完成評審會顯示改進幅度。")
+                    else:
+                        color = '#2196F3'
+                        delta_html = ""
+                        if avg_original is not None and avg_optimized is not None:
+                            improvement = avg_optimized - avg_original
+                            if improvement > 0:
+                                color = '#28a745'
+                                delta_html = f"<p style='color: {color}; font-size: 18px;'>↑ {improvement:.1f}分</p>"
+                            elif improvement < 0:
+                                color = '#dc3545'
+                                delta_html = f"<p style='color: {color}; font-size: 18px;'>↓ {abs(improvement):.1f}分</p>"
+                            else:
+                                color = '#5f6368'
+                                delta_html = f"<p style='color: {color}; font-size: 18px;'>→ 0.0分</p>"
+
+                        st.markdown(
+                            f"<h1 style='color: {color}; margin: 0;'>{display_score:.1f}分</h1>",
+                            unsafe_allow_html=True
+                        )
+                        if delta_html:
+                            st.markdown(delta_html, unsafe_allow_html=True)
+                        st.caption(f"人工 GPT 評審依照{summary_text}的加權平均；若兩版本皆完成評審會顯示改進幅度。")
+
+                        evaluated_question_ids = judge_df[
+                            judge_df['version'].astype(str).str.lower().isin(['original', 'optimized'])
+                        ]['question_id'].dropna().unique()
+                        st.markdown(
+                            f"<p style='font-size: 16px;'>已評審題數：{len(evaluated_question_ids)}/{len(results_df)}</p>",
+                            unsafe_allow_html=True
+                        )
+
+                with controls_container:
+                    selected_dims_widget = st.multiselect(
+                        "選擇納入 GPT 總分的維度",
+                        options=available_dims,
+                        format_func=lambda d: GPT_DIMENSION_LABELS.get(d, d),
+                        key="overview_gpt_dims"
                     )
-                    if delta_html:
-                        st.markdown(delta_html, unsafe_allow_html=True)
-                    st.caption(f"人工 GPT 評審依照{summary_text}的加權平均；若兩版本皆完成評審會顯示改進幅度。")
 
-                evaluated_question_ids = judge_df[
-                    judge_df['version'].astype(str).str.lower().isin(['original', 'optimized'])
-                ]['question_id'].dropna().unique()
-                st.markdown(
-                    f"<p style='font-size: 16px;'>已評審題數：{len(evaluated_question_ids)}/{len(results_df)}</p>",
-                    unsafe_allow_html=True
-                )
+                    if display_warning:
+                        st.warning("至少選擇一個 GPT 維度才可計算總分，已暫時使用預設四維。")
+
+                    weight_cols = st.columns(len(selected_dims)) if selected_dims else []
+                    for col, dim in zip(weight_cols, selected_dims):
+                        with col:
+                            weight_key = f"overview_weight_{dim}"
+                            if weight_key not in st.session_state:
+                                st.session_state[weight_key] = float(st.session_state.gpt_overview_weight_inputs.get(dim, 0.25))
+                            new_value = st.number_input(
+                                GPT_DIMENSION_LABELS.get(dim, dim),
+                                min_value=0.0,
+                                value=float(st.session_state.get(weight_key, st.session_state.gpt_overview_weight_inputs.get(dim, 0.25))),
+                                step=0.05,
+                                key=weight_key
+                            )
+                            st.session_state.gpt_overview_weight_inputs[dim] = new_value
             else:
                 st.info("GPT 評審未啟用")
 
