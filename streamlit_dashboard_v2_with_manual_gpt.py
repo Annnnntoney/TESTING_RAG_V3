@@ -1562,11 +1562,46 @@ if uploaded_file is not None:
         selected_gpt_weights = get_gpt_dimension_weights(selected_gpt_dims)
         selected_weight_summary = format_gpt_weight_summary(selected_gpt_dims, selected_gpt_weights)
 
+        # 從歷史紀錄載入 GPT 評分資料（優先使用）
+        judge_df = st.session_state.history_manager.load_llm_judge_table()
+        if judge_df is None:
+            judge_df = pd.DataFrame()
+        else:
+            judge_df = judge_df.copy()
+            judge_df['question_id'] = pd.to_numeric(judge_df.get('question_id'), errors='coerce')
+
+        def get_gpt_score_from_judge(qid: int, version: str) -> float:
+            """從 judge_df 計算指定題目和版本的 GPT 綜合評分"""
+            if judge_df.empty:
+                return 0.0
+            subset = judge_df[
+                (judge_df['question_id'] == qid) &
+                (judge_df['version'].astype(str).str.lower() == version.lower())
+            ]
+            if subset.empty:
+                return 0.0
+            score_total = 0.0
+            weight_total = 0.0
+            for dim in selected_gpt_dims:
+                dim_row = subset[subset['dimension'] == dim]
+                if dim_row.empty:
+                    continue
+                score_val = pd.to_numeric(dim_row.iloc[0].get('score'), errors='coerce')
+                if pd.isna(score_val):
+                    continue
+                weight = selected_gpt_weights.get(dim, 0.0)
+                score_total += float(score_val) * weight
+                weight_total += weight
+            if weight_total > 0:
+                return score_total / weight_total
+            return 0.0
+
         # 加入 GPT 評分（如果有）- 使用實際序號而非 DataFrame index
         for idx in range(len(results_df)):
             # 取得該行的實際序號
             actual_q_id = int(results_df.iloc[idx]['序號'])
 
+            # 優先從 session_state 取得，否則從 judge_df 讀取
             if actual_q_id in st.session_state.gpt_responses_original:
                 gpt_data = st.session_state.gpt_responses_original[actual_q_id]
                 results_df.at[idx, 'GPT_OVERALL_ORIGINAL'] = compute_gpt_overall(
@@ -1574,8 +1609,10 @@ if uploaded_file is not None:
                 )
                 results_df.at[idx, 'GPT_OVERALL_ORIGINAL_RAW'] = gpt_data.get('overall', 0)
             else:
-                results_df.at[idx, 'GPT_OVERALL_ORIGINAL'] = 0
-                results_df.at[idx, 'GPT_OVERALL_ORIGINAL_RAW'] = 0
+                # 從歷史紀錄讀取
+                gpt_score = get_gpt_score_from_judge(actual_q_id, 'original')
+                results_df.at[idx, 'GPT_OVERALL_ORIGINAL'] = gpt_score
+                results_df.at[idx, 'GPT_OVERALL_ORIGINAL_RAW'] = gpt_score
 
             if actual_q_id in st.session_state.gpt_responses_optimized:
                 gpt_data = st.session_state.gpt_responses_optimized[actual_q_id]
@@ -1584,8 +1621,10 @@ if uploaded_file is not None:
                 )
                 results_df.at[idx, 'GPT_OVERALL_OPTIMIZED_RAW'] = gpt_data.get('overall', 0)
             else:
-                results_df.at[idx, 'GPT_OVERALL_OPTIMIZED'] = 0
-                results_df.at[idx, 'GPT_OVERALL_OPTIMIZED_RAW'] = 0
+                # 從歷史紀錄讀取
+                gpt_score = get_gpt_score_from_judge(actual_q_id, 'optimized')
+                results_df.at[idx, 'GPT_OVERALL_OPTIMIZED'] = gpt_score
+                results_df.at[idx, 'GPT_OVERALL_OPTIMIZED_RAW'] = gpt_score
 
         # 重新計算綜合評分（包含 GPT）
         # 注意：不覆蓋原始 results_df，保留原始的語義相似度分數
@@ -1802,14 +1841,13 @@ if uploaded_file is not None:
                             weight_key = f"overview_weight_{dim}"
                             if weight_key not in st.session_state:
                                 st.session_state[weight_key] = float(st.session_state.gpt_overview_weight_inputs.get(dim, 0.25))
-                            new_value = st.number_input(
+                            st.number_input(
                                 GPT_DIMENSION_LABELS.get(dim, dim),
                                 min_value=0.0,
-                                value=float(st.session_state.get(weight_key, st.session_state.gpt_overview_weight_inputs.get(dim, 0.25))),
                                 step=0.05,
                                 key=weight_key
                             )
-                            st.session_state.gpt_overview_weight_inputs[dim] = new_value
+                            st.session_state.gpt_overview_weight_inputs[dim] = st.session_state[weight_key]
             else:
                 st.info("GPT 評審未啟用")
 
